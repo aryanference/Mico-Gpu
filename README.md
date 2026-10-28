@@ -1,279 +1,314 @@
-# Mico-gpu
+<div align="center">
 
-> A minimal, fully-documented GPU implementation in Verilog — built to demystify how GPUs actually work at the hardware level.
+# ⚡ Mico-gpu
 
-Crafted with under 15 files of richly commented Verilog, complete architecture & ISA documentation, working matrix kernels (addition + multiplication), and full simulation support with execution traces.
+**A from-scratch GPU in Verilog — built for people who want to understand what's actually happening inside the chip.**
 
----
+![Language](https://img.shields.io/badge/Language-SystemVerilog-blueviolet?style=flat-square)
+![Files](https://img.shields.io/badge/Source%20Files-%3C15-success?style=flat-square)
+![License](https://img.shields.io/badge/License-Educational-orange?style=flat-square)
+![Author](https://img.shields.io/badge/Author-Aryan%20Gahlot-blue?style=flat-square)
 
-### Table of Contents
-
-- [Overview](#overview)
-- [Architecture](#architecture)
-  - [GPU](#gpu)
-  - [Memory](#memory)
-  - [Core](#core)
-- [ISA](#isa)
-- [Execution](#execution)
-  - [Core Execution Flow](#core-execution-flow)
-  - [Thread Execution](#thread-execution)
-- [Kernels](#kernels)
-  - [Matrix Addition](#matrix-addition)
-  - [Matrix Multiplication](#matrix-multiplication)
-- [Simulation](#simulation)
-- [Advanced Functionality](#advanced-functionality)
-- [Next Steps](#next-steps)
-- [License](#license)
+</div>
 
 ---
 
-# Overview
+## 📌 Why does this exist?
 
-Want to learn how a CPU works end-to-end — from architecture down to control signals? Plenty of great resources exist for that.
+Learning how a CPU works is easy — tutorials, books, and open-source implementations are everywhere.
 
-GPUs are a different story.
+**GPUs are a completely different story.**
 
-The GPU market is fiercely competitive. Low-level technical details for modern architectures remain largely proprietary, and while GPU *programming* resources are plentiful, resources explaining GPU *hardware* internals are nearly nonexistent.
+The GPU industry is fiercely competitive. Architectural details are kept proprietary, and while GPU *programming* resources are abundant, resources explaining GPU *hardware internals* are almost nonexistent.
 
-Open-source GPU projects like [Miaow](https://github.com/VerticalResearchGroup/miaow) and [VeriGPU](https://github.com/hughperkins/VeriGPU/tree/main) exist, but they target feature completeness — making them complex and hard to approach for learners.
+Projects like [Miaow](https://github.com/VerticalResearchGroup/miaow) and [VeriGPU](https://github.com/hughperkins/VeriGPU/tree/main) exist — but they target full feature-parity with production hardware. Great for production, overwhelming for learning.
 
-That's exactly why **Mico-gpu** was built.
+> **Mico-gpu strips away everything non-essential and exposes the three ideas that matter most:**
 
-## What is Mico-gpu?
-
-> [!IMPORTANT]
->
-> **Mico-gpu** is a minimal GPU implementation optimized for learning how GPUs work from the ground up.
->
-> With the rise of general-purpose GPUs (GPGPUs) and ML accelerators like Google's TPU, Mico-gpu focuses on the **core architectural principles** shared by all modern hardware accelerators — rather than graphics-specific details.
-
-By stripping away production-grade complexity, Mico-gpu lets you focus on the three fundamental pillars of GPU design:
-
-1. **Architecture** — What does a GPU look like structurally? What are its most critical building blocks?
-2. **Parallelization** — How is the SIMD programming model physically realized in hardware?
-3. **Memory** — How does a GPU work around the constraints of limited memory bandwidth?
-
-Once you have a handle on these fundamentals, the [Advanced Functionality](#advanced-functionality) section covers the most impactful real-world optimizations used in production GPUs.
+| Pillar | Question it answers |
+|--------|-------------------|
+| 🏗 **Architecture** | What does a GPU actually look like structurally? |
+| ⚡ **Parallelization** | How is SIMD physically built in hardware? |
+| 🧠 **Memory** | How does a GPU cope with bandwidth limitations? |
 
 ---
 
-# Architecture
+## 🗺 Table of Contents
+
+| Section | What you'll find |
+|---------|-----------------|
+| [Architecture](#-architecture) | GPU, memory, and core layout |
+| [ISA](#-isa) | The 11-instruction set |
+| [Execution](#-execution) | How instructions flow through the pipeline |
+| [Kernels](#-kernels) | Matrix addition & multiplication examples |
+| [Simulation](#-simulation) | How to run it yourself |
+| [Advanced Topics](#-advanced-functionality) | What real GPUs add on top |
+| [Next Steps](#-next-steps) | Roadmap & contribution guide |
+
+---
+
+## 🏗 Architecture
 
 <p float="left">
-  <img src="/docs/images/gpu.png" alt="GPU Architecture" width="48%">
-  <img src="/docs/images/core.png" alt="Core Architecture" width="48%">
+  <img src="/docs/images/gpu.png" alt="GPU Architecture Diagram" width="48%">
+  <img src="/docs/images/core.png" alt="Core Architecture Diagram" width="48%">
 </p>
 
-## GPU
+### The Big Picture
 
-Mico-gpu executes a single kernel at a time.
+Mico-gpu runs **one kernel at a time**. Launching a kernel is a four-step process:
 
-To launch a kernel:
+```
+1. Write kernel code → program memory
+2. Write input data  → data memory
+3. Set thread count  → device control register
+4. Assert start signal → execution begins
+```
 
-1. Load global program memory with the kernel code.
-2. Load data memory with the required input data.
-3. Write the thread count into the device control register.
-4. Assert the start signal to begin execution.
+The GPU is composed of five main units:
 
-The GPU is composed of the following units:
-
-1. **Device Control Register**
-2. **Dispatcher**
-3. **Compute Cores** (configurable count)
-4. **Memory Controllers** (data memory & program memory)
-5. **Cache**
-
-### Device Control Register
-
-Stores metadata that controls how kernels are executed. In Mico-gpu, this stores a single value: `thread_count` — the total number of threads to launch for the active kernel.
-
-### Dispatcher
-
-After a kernel is launched, the dispatcher manages how threads are distributed across compute cores.
-
-Threads are grouped into **blocks** — sets of threads that can be executed in parallel on a single core. The dispatcher feeds these blocks to available cores and signals kernel completion once all blocks have been processed.
-
-## Memory
-
-Mico-gpu interfaces with external global memory. Data memory and program memory are kept separate for clarity.
-
-### Global Memory
-
-**Data memory:**
-- 8-bit addressable (256 rows)
-- 8-bit data width (values 0–255 per row)
-
-**Program memory:**
-- 8-bit addressable (256 rows)
-- 16-bit data width (one instruction per row, per the ISA spec)
-
-### Memory Controllers
-
-Global memory has fixed read/write bandwidth. When the number of simultaneous memory requests from compute cores exceeds what external memory can handle, the memory controllers step in — throttling outgoing requests and routing responses back to the correct resources.
-
-Each controller has a fixed number of channels sized to match global memory bandwidth.
-
-### Cache (WIP)
-
-When multiple cores repeatedly request the same data from global memory, it's wasteful to re-fetch it every time. The cache stores recently fetched data in on-device SRAM, dramatically reducing latency for repeat accesses and freeing up memory bandwidth for new requests.
-
-## Core
-
-Each core contains a set of compute resources sized around a fixed number of threads. In Mico-gpu, each core processes one **block** at a time. For each thread in a block, the core provides a dedicated ALU, LSU, PC, and register file.
-
-### Scheduler
-
-A single scheduler per core manages thread execution.
-
-Mico-gpu's scheduler runs all instructions for a block sequentially and in lock-step — all threads execute the same instruction at the same time. A new block is picked up only after the current one completes.
-
-More advanced schedulers use **pipelining** (streaming multiple instructions through the pipeline simultaneously) and **warp scheduling** (interleaving execution across multiple thread batches) to maximize resource utilization.
-
-The scheduler's central challenge is handling the async latency of load/store operations — memory accesses that can stall execution for many cycles.
-
-### Fetcher
-
-Asynchronously fetches the instruction at the current program counter from program memory. (After the first block executes, most fetches should hit the instruction cache.)
-
-### Decoder
-
-Decodes the fetched instruction into concrete control signals for the execution units.
-
-### Register Files
-
-Every thread has its own dedicated register file — the local workspace for data computations. This is what enables the **SIMD (Single Instruction, Multiple Data)** pattern: every thread runs the same instructions on its own unique data.
-
-Each register file also contains read-only registers holding `%blockIdx`, `%blockDim`, and `%threadIdx`, allowing kernels to operate on different data depending on thread identity.
-
-### ALUs
-
-One dedicated arithmetic-logic unit per thread. Handles: `ADD`, `SUB`, `MUL`, `DIV`.
-
-Also handles the `CMP` instruction, which computes the sign of the difference between two registers and stores the result (negative / zero / positive) into the **NZP register** inside the PC unit.
-
-### LSUs
-
-One dedicated load-store unit per thread for accessing global data memory. Handles `LDR` and `STR` instructions, including async wait cycles while memory controller processes the request.
-
-### PCs
-
-One dedicated program counter per thread, tracking the next instruction to execute.
-
-By default, the PC increments by 1 per instruction. The `BRnzp` instruction checks the NZP register set by a prior `CMP` and conditionally branches to a specified line in program memory — this is how loops and conditionals are implemented.
-
-Mico-gpu assumes all threads converge to the same PC after each instruction (a simplification). Real GPUs handle **branch divergence**, where threads branch to different PCs and must be split into separate execution paths.
+```
+┌─────────────────────────────────────────────┐
+│                  Mico-gpu                   │
+│                                             │
+│  ┌─────────┐   ┌────────────┐              │
+│  │   DCR   │   │ Dispatcher │              │
+│  └─────────┘   └────────────┘              │
+│                                             │
+│  ┌──────┐ ┌──────┐ ┌──────┐  (N cores)    │
+│  │ Core │ │ Core │ │ Core │               │
+│  └──────┘ └──────┘ └──────┘               │
+│                                             │
+│  ┌────────────────┐  ┌───────────────────┐ │
+│  │ Data Mem Ctrl  │  │ Prog Mem Ctrl     │ │
+│  └────────────────┘  └───────────────────┘ │
+│                   ┌───────┐                │
+│                   │ Cache │                │
+│                   └───────┘                │
+└─────────────────────────────────────────────┘
+```
 
 ---
 
-# ISA
+### 🎛 Device Control Register
 
-![ISA](/docs/images/isa.png)
-
-Mico-gpu implements a compact 11-instruction ISA sufficient for proof-of-concept kernels like matrix addition and multiplication.
-
-| Instruction | Description |
-|-------------|-------------|
-| `BRnzp` | Branch to a target address if the NZP register matches the specified condition |
-| `CMP` | Compare two registers; store the result sign in the NZP register |
-| `ADD` | Integer addition |
-| `SUB` | Integer subtraction |
-| `MUL` | Integer multiplication |
-| `DIV` | Integer division |
-| `LDR` | Load a value from global memory into a register |
-| `STR` | Store a register value into global memory |
-| `CONST` | Load an immediate constant into a register |
-| `RET` | Signal end of execution for the current thread |
-
-Each register is specified with 4 bits → 16 total registers.  
-`R0`–`R12` are general-purpose read/write registers.  
-The last 3 are read-only special registers: `%blockIdx`, `%blockDim`, `%threadIdx`.
+Holds metadata for kernel execution. In Mico-gpu this is a single value: `thread_count` — the total threads to launch.
 
 ---
 
-# Execution
+### 🚦 Dispatcher
 
-## Core Execution Flow
-
-Each core steps through the following stages for every instruction:
-
-| Stage | Description |
-|-------|-------------|
-| `FETCH` | Fetch the next instruction from program memory at the current PC |
-| `DECODE` | Decode the instruction into control signals |
-| `REQUEST` | Issue a global memory request (for `LDR` / `STR` only) |
-| `WAIT` | Wait for the memory response (for `LDR` / `STR` only) |
-| `EXECUTE` | Perform the computation |
-| `UPDATE` | Write results back to register files and the NZP register |
-
-This sequential control flow is chosen for clarity. In practice, stages can be compressed and **pipelining** can be used to overlap multiple instructions in flight simultaneously.
-
-## Thread Execution
-
-![Thread](/docs/images/thread.png)
-
-Each thread follows the execution path shown above — closely resembling a classic CPU datapath. The key distinction: `%blockIdx`, `%blockDim`, and `%threadIdx` in the read-only registers enable SIMD behavior across many threads running in parallel.
+After launch, the dispatcher groups threads into **blocks** and routes each block to an available compute core. Once all blocks are processed, it signals kernel completion.
 
 ---
 
-# Kernels
+### 💾 Memory
 
-Two proof-of-concept kernels are included to demonstrate SIMD programming and execution. The test suite can fully simulate either kernel, outputting data memory states and a complete cycle-by-cycle execution trace.
+Mico-gpu separates **data memory** and **program memory** for clarity.
 
-## Matrix Addition
+#### Specifications
 
-Adds two `1×8` matrices element-wise using 8 parallel threads.
+| | Data Memory | Program Memory |
+|---|---|---|
+| **Addressability** | 8-bit (256 rows) | 8-bit (256 rows) |
+| **Data Width** | 8-bit (values 0–255) | 16-bit (one instruction/row) |
 
-Demonstrates: `%blockIdx` / `%blockDim` / `%threadIdx` SIMD addressing, `LDR` / `STR` async memory operations.
+#### Memory Controllers
 
-`matadd.asm`
+Global memory has fixed bandwidth. When simultaneous requests from cores exceed capacity, the memory controller:
+- **Throttles** outgoing requests to match bandwidth
+- **Routes** responses back to the correct core/thread
+
+#### Cache *(WIP)*
+
+Repeated requests for the same data skip global memory entirely — fetched data is stored on-device in SRAM and served from there on subsequent requests, preserving bandwidth for new data.
+
+---
+
+### 🖥 Core
+
+Each core processes one **block** at a time. For every thread in that block, it provides a dedicated:
+
+```
+Thread N
+├── Register File  ← thread-local data storage
+├── ALU            ← arithmetic & logic
+├── LSU            ← memory load/store
+└── PC             ← instruction pointer + NZP register
+```
+
+Shared across all threads in a core:
+- **Scheduler** — orchestrates instruction execution
+- **Fetcher** — pulls instructions from program memory
+- **Decoder** — translates instructions into control signals
+
+#### Scheduler
+
+Runs all threads **in lock-step** — every thread executes the same instruction simultaneously. A new block is only picked up after the current one finishes.
+
+> Real GPUs use **pipelining** and **warp scheduling** to overlap execution and hide memory latency.
+
+#### Register Files
+
+Every thread has its own private register file — this is what enables SIMD. Same instruction, different data per thread.
+
+Three **read-only** special registers are baked into every register file:
+
+| Register | Value |
+|----------|-------|
+| `%blockIdx` | Index of the current block |
+| `%blockDim` | Number of threads per block |
+| `%threadIdx` | Index of this thread within the block |
+
+#### ALU
+
+Handles arithmetic: `ADD` `SUB` `MUL` `DIV`
+
+Also handles `CMP` — computes the sign of the difference between two registers and writes **Negative / Zero / Positive** into the **NZP register** inside the PC unit (used for branching).
+
+#### LSU
+
+Handles `LDR` and `STR` — including the async wait cycles while the memory controller processes the request.
+
+#### PC
+
+Tracks the next instruction. Increments by 1 by default. With `BRnzp`, checks the NZP register and conditionally jumps to a target address — **this is how loops and conditionals work**.
+
+> Mico-gpu assumes all threads converge to the same PC after every instruction. Real GPUs handle **branch divergence** when threads split to different addresses.
+
+---
+
+## 📋 ISA
+
+![ISA Diagram](/docs/images/isa.png)
+
+Mico-gpu implements **11 instructions** — enough to run real SIMD kernels.
+
+| Instruction | Type | Description |
+|-------------|------|-------------|
+| `ADD` | Arithmetic | `Rd = Rs1 + Rs2` |
+| `SUB` | Arithmetic | `Rd = Rs1 - Rs2` |
+| `MUL` | Arithmetic | `Rd = Rs1 * Rs2` |
+| `DIV` | Arithmetic | `Rd = Rs1 / Rs2` |
+| `CMP` | Compare | Set NZP register based on `Rs1 - Rs2` |
+| `BRnzp` | Branch | Jump if NZP matches condition |
+| `LDR` | Memory | Load from global memory |
+| `STR` | Memory | Store to global memory |
+| `CONST` | Immediate | Load constant into register |
+| `RET` | Control | Signal end of thread execution |
+
+**Register layout:** 4-bit encoding → 16 registers total
+
+- `R0` – `R12` → General purpose (read/write)
+- `R13` → `%blockIdx` *(read-only)*
+- `R14` → `%blockDim` *(read-only)*
+- `R15` → `%threadIdx` *(read-only)*
+
+---
+
+## ⚙ Execution
+
+### Core Execution Flow
+
+Each instruction steps through 6 stages:
+
+```
+  ┌─────────┐
+  │  FETCH  │  Pull instruction at current PC from program memory
+  └────┬────┘
+       ▼
+  ┌─────────┐
+  │ DECODE  │  Translate instruction into control signals
+  └────┬────┘
+       ▼
+  ┌─────────┐
+  │ REQUEST │  Issue memory request (LDR / STR only)
+  └────┬────┘
+       ▼
+  ┌─────────┐
+  │  WAIT   │  Wait for memory response (LDR / STR only)
+  └────┬────┘
+       ▼
+  ┌─────────┐
+  │ EXECUTE │  Perform the computation
+  └────┬────┘
+       ▼
+  ┌─────────┐
+  │ UPDATE  │  Write results to register files / NZP register
+  └─────────┘
+```
+
+### Thread Execution
+
+![Thread Diagram](/docs/images/thread.png)
+
+Each thread follows the above path independently on its own data — closely resembling a CPU datapath. The key difference: the SIMD special registers (`%blockIdx`, `%blockDim`, `%threadIdx`) give every thread a unique identity while running identical instructions.
+
+---
+
+## 🧪 Kernels
+
+Two proof-of-concept kernels ship with Mico-gpu to demonstrate SIMD programming end-to-end.
+
+---
+
+### ➕ Matrix Addition
+
+**Task:** Add two `1×8` matrices element-wise using **8 parallel threads** (one per element).
+
+**Demonstrates:** SIMD addressing with `%threadIdx`, async memory with `LDR`/`STR`
 
 ```asm
+; matadd.asm
 .threads 8
-.data 0 1 2 3 4 5 6 7          ; matrix A (1 x 8)
-.data 0 1 2 3 4 5 6 7          ; matrix B (1 x 8)
+.data 0 1 2 3 4 5 6 7          ; matrix A (1×8)
+.data 0 1 2 3 4 5 6 7          ; matrix B (1×8)
 
 MUL R0, %blockIdx, %blockDim
 ADD R0, R0, %threadIdx         ; i = blockIdx * blockDim + threadIdx
 
-CONST R1, #0                   ; baseA (matrix A base address)
-CONST R2, #8                   ; baseB (matrix B base address)
-CONST R3, #16                  ; baseC (matrix C base address)
+CONST R1, #0                   ; baseA
+CONST R2, #8                   ; baseB
+CONST R3, #16                  ; baseC (output)
 
-ADD R4, R1, R0                 ; addr(A[i]) = baseA + i
-LDR R4, R4                     ; load A[i] from global memory
+ADD R4, R1, R0                 ; addr(A[i])
+LDR R4, R4                     ; A[i] = mem[addr]
 
-ADD R5, R2, R0                 ; addr(B[i]) = baseB + i
-LDR R5, R5                     ; load B[i] from global memory
+ADD R5, R2, R0                 ; addr(B[i])
+LDR R5, R5                     ; B[i] = mem[addr]
 
 ADD R6, R4, R5                 ; C[i] = A[i] + B[i]
 
-ADD R7, R3, R0                 ; addr(C[i]) = baseC + i
-STR R7, R6                     ; store C[i] in global memory
+ADD R7, R3, R0                 ; addr(C[i])
+STR R7, R6                     ; mem[addr] = C[i]
 
-RET                            ; end of kernel
+RET
 ```
 
-## Matrix Multiplication
+---
 
-Multiplies two `2×2` matrices. Each of the 4 threads computes one output element by calculating the dot product of the corresponding row and column. Uses `CMP` + `BRnzp` to demonstrate branching (all branches converge, so this works on Mico-gpu's current scheduler).
+### ✖ Matrix Multiplication
 
-`matmul.asm`
+**Task:** Multiply two `2×2` matrices using **4 parallel threads** (one per output element).
+
+**Demonstrates:** Inner loop with `CMP` + `BRnzp` branching, multi-step computation per thread
 
 ```asm
+; matmul.asm
 .threads 4
-.data 1 2 3 4                  ; matrix A (2 x 2)
-.data 1 2 3 4                  ; matrix B (2 x 2)
+.data 1 2 3 4                  ; matrix A (2×2)
+.data 1 2 3 4                  ; matrix B (2×2)
 
 MUL R0, %blockIdx, %blockDim
 ADD R0, R0, %threadIdx         ; i = blockIdx * blockDim + threadIdx
 
 CONST R1, #1                   ; increment
-CONST R2, #2                   ; N (matrix inner dimension)
-CONST R3, #0                   ; baseA (matrix A base address)
-CONST R4, #4                   ; baseB (matrix B base address)
-CONST R5, #8                   ; baseC (matrix C base address)
+CONST R2, #2                   ; N (inner dimension)
+CONST R3, #0                   ; baseA
+CONST R4, #4                   ; baseB
+CONST R5, #8                   ; baseC
 
-DIV R6, R0, R2                 ; row = i // N
+DIV R6, R0, R2                 ; row = i / N
 MUL R7, R6, R2
 SUB R7, R0, R7                 ; col = i % N
 
@@ -283,117 +318,111 @@ CONST R9, #0                   ; k = 0
 LOOP:
   MUL R10, R6, R2
   ADD R10, R10, R9
-  ADD R10, R10, R3             ; addr(A[i]) = row * N + k + baseA
-  LDR R10, R10                 ; load A[i] from global memory
+  ADD R10, R10, R3             ; addr(A[row][k])
+  LDR R10, R10
 
   MUL R11, R9, R2
   ADD R11, R11, R7
-  ADD R11, R11, R4             ; addr(B[i]) = k * N + col + baseB
-  LDR R11, R11                 ; load B[i] from global memory
+  ADD R11, R11, R4             ; addr(B[k][col])
+  LDR R11, R11
 
   MUL R12, R10, R11
-  ADD R8, R8, R12              ; acc = acc + A[i] * B[i]
+  ADD R8, R8, R12              ; acc += A[row][k] * B[k][col]
 
-  ADD R9, R9, R1               ; increment k
+  ADD R9, R9, R1               ; k++
 
   CMP R9, R2
-  BRn LOOP                    ; loop while k < N
+  BRn LOOP                    ; repeat while k < N
 
-ADD R9, R5, R0                 ; addr(C[i]) = baseC + i
-STR R9, R8                     ; store C[i] in global memory
+ADD R9, R5, R0                 ; addr(C[i])
+STR R9, R8                     ; mem[addr] = acc
 
-RET                            ; end of kernel
+RET
 ```
 
 ---
 
-# Simulation
+## 🚀 Simulation
 
-Mico-gpu includes a full simulation setup for both kernels.
+Run either kernel from scratch with full execution traces.
 
-**Prerequisites:**
+### Prerequisites
 
-- [Icarus Verilog](https://steveicarus.github.io/iverilog/usage/installation.html): `brew install icarus-verilog`
-- [cocotb](https://docs.cocotb.org/en/stable/install.html): `pip3 install cocotb`
-- [sv2v](https://github.com/zachjs/sv2v/releases): download the latest release, unzip, and add the binary to `$PATH`
+```bash
+# Verilog compiler
+brew install icarus-verilog
 
-**Setup:**
+# Python test framework
+pip3 install cocotb
+
+# SystemVerilog → Verilog converter
+# Download from: https://github.com/zachjs/sv2v/releases
+# Unzip and add binary to $PATH
+```
+
+### Setup
 
 ```bash
 mkdir build
 ```
 
-**Run simulations:**
+### Run
 
 ```bash
-make test_matadd    # simulate matrix addition kernel
-make test_matmul    # simulate matrix multiplication kernel
+make test_matadd    # simulate matrix addition
+make test_matmul    # simulate matrix multiplication
 ```
 
-Simulation outputs a log file in `test/logs` containing:
-- Initial data memory state
-- Complete cycle-by-cycle execution trace
-- Final data memory state
+### Output
 
-The initial state shows your input matrices; the final state shows the computed result matrix.
+Logs land in `test/logs/` containing three sections:
 
-![Execution Trace](docs/images/trace.png)
+```
+[1] Initial data memory state   → your input matrices
+[2] Cycle-by-cycle trace        → every thread, every core, every cycle
+[3] Final data memory state     → the computed result
+```
 
-> [!TIP]
-> Running into issues getting the simulation up? Feel free to open a GitHub issue — happy to help get you unblocked.
-
----
-
-# Advanced Functionality
-
-Mico-gpu intentionally omits many real-world GPU features to keep the design learnable. Here's a summary of the most impactful ones:
-
-### Multi-Layered Cache & Shared Memory
-
-Production GPUs use multiple cache levels — some private to individual cores — to keep frequently accessed data close to the compute units and minimize global memory latency. Mico-gpu implements a single cache layer.
-
-**Shared memory** is a further optimization that lets threads within the same block share a fast, on-chip memory region to exchange intermediate results.
-
-### Memory Coalescing
-
-When many threads access sequential memory addresses simultaneously, their individual requests can be merged into a single, larger transaction — dramatically reducing memory access overhead. Mico-gpu processes each request independently.
-
-### Pipelining
-
-Mico-gpu waits for each instruction to fully complete before issuing the next. Real GPUs use **instruction pipelining** to overlap multiple in-flight instructions, keeping execution units busy even while waiting on memory.
-
-### Warp Scheduling
-
-Blocks can be further divided into **warps** — smaller thread batches. Multiple warps can be in-flight on a single core, with the scheduler interleaving their execution to hide memory latency. This is analogous to pipelining but at the thread-batch level.
-
-### Branch Divergence
-
-Mico-gpu assumes all threads in a block always converge to the same PC. Real GPUs handle **branch divergence** — when threads branch to different PCs based on their data, they must be split into independent execution paths and eventually reconverged.
-
-### Synchronization & Barriers
-
-**Barriers** allow threads within a block to synchronize — each thread waits until all others have reached the barrier point before proceeding. Essential when threads need to share intermediate results via shared memory.
+![Execution Trace](/docs/images/trace.png)
 
 ---
 
-# Next Steps
+## 🔬 Advanced Functionality
 
-Planned improvements — contributions welcome:
+Mico-gpu is intentionally minimal. Here's what production GPUs layer on top — and why each matters:
 
-- [ ] Add an instruction cache
-- [ ] Build an adapter for Tiny Tapeout 7
-- [ ] Implement basic branch divergence handling
-- [ ] Implement basic memory coalescing
-- [ ] Implement basic pipelining
-- [ ] Optimize control flow and register usage to improve cycle time
-- [ ] Write a basic graphics kernel or add simple graphics hardware
-
-**Feel free to open a PR with any improvements you'd like to contribute! 😄**
+| Feature | What it does | Why it matters |
+|---------|-------------|----------------|
+| **Multi-level Cache** | Caches data at multiple levels, some private to cores | Reduces global memory round-trips dramatically |
+| **Shared Memory** | Fast on-chip memory shared between threads in a block | Lets threads exchange intermediate results |
+| **Memory Coalescing** | Merges adjacent memory requests into one transaction | Cuts addressing overhead for sequential access patterns |
+| **Pipelining** | Overlaps multiple in-flight instructions | Keeps execution units busy during memory waits |
+| **Warp Scheduling** | Interleaves thread batches to hide latency | Maximizes core utilization across many threads |
+| **Branch Divergence** | Handles threads branching to different PCs | Enables truly independent per-thread control flow |
+| **Barriers** | Lets threads wait for each other at sync points | Required for safe shared memory usage |
 
 ---
 
-# License
+## 🛣 Next Steps
 
-Copyright © 2026 **Aryan Gahlot**. All rights reserved.
+Planned work — PRs welcome on any of these:
 
-This project is provided for educational purposes. You are free to use, study, and modify the source code for personal and non-commercial use, provided that appropriate credit is given to the original author.
+- [ ] Instruction cache
+- [ ] Tiny Tapeout 7 adapter
+- [ ] Basic branch divergence
+- [ ] Basic memory coalescing
+- [ ] Basic pipelining
+- [ ] Control flow & register optimizations
+- [ ] Simple graphics kernel or graphics hardware demo
+
+---
+
+<div align="center">
+
+---
+
+*© 2026 **Aryan Gahlot**. All rights reserved.*
+
+*Free to use, study, and modify for personal and educational purposes with attribution.*
+
+</div>
